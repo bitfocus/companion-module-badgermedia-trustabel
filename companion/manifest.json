@@ -1,0 +1,27 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"id": "badgermedia-trustabel",
+	"name": "badgermedia-trustabel",
+	"shortname": "trustabel",
+	"description": "Control trustabel label panels via the Network Adapter REST API",
+	"version": "0.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/bitfocus/companion-module-badgermedia-trustabel.git",
+	"bugs": "https://github.com/bitfocus/companion-module-badgermedia-trustabel/issues",
+	"maintainers": [
+		{
+			"name": "Bitfocus AS",
+			"email": "connections@bitfocus.io"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../dist/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "Badger Media",
+	"products": ["trustabel"],
+	"keywords": ["label", "panel", "signage", "network adapter"]
+}
