@@ -1,12 +1,6 @@
 import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
 
-export interface ModuleConfig {
-	host: string
-	port: number
-	token: string
-	pollInterval: number
-	labelCount: number
-}
+export type { ModuleConfig, ModuleSecrets } from './types.js'
 
 export function GetConfigFields(): SomeCompanionConfigField[] {
 	return [
@@ -15,7 +9,8 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			id: 'info',
 			label: 'Information',
 			width: 12,
-			value: 'Controls a trustabel Network Adapter over its REST API (v1).',
+			value:
+				'Control the Trustabel T-NA4 Network Adapter and the panels connected to it. The adapter must be in **server mode**.',
 		},
 		{
 			type: 'textinput',
@@ -23,7 +18,7 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			label: 'Network Adapter IP',
 			width: 6,
 			regex: Regex.HOSTNAME,
-			default: '192.168.1.100',
+			default: '192.168.1.99',
 		},
 		{
 			type: 'number',
@@ -39,26 +34,6 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			id: 'token',
 			label: 'Bearer Token',
 			width: 12,
-		},
-		{
-			type: 'number',
-			id: 'labelCount',
-			label: 'Number of labels to poll',
-			tooltip: 'Labels are read from id 0 upwards, and exposed as variables and feedbacks.',
-			width: 4,
-			min: 0,
-			max: 256,
-			default: 16,
-		},
-		{
-			type: 'number',
-			id: 'pollInterval',
-			label: 'Poll interval (seconds)',
-			tooltip: 'Set to 0 to disable polling.',
-			width: 4,
-			min: 0,
-			max: 3600,
-			default: 5,
 		},
 	]
 }

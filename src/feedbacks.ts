@@ -1,8 +1,22 @@
 import { combineRgb, type CompanionFeedbackDefinitions } from '@companion-module/base'
-import type { ModuleInstance } from './main.js'
+import type ModuleInstance from './main.js'
+import { toLabelId } from './api.js'
+import type { FeedbackSchemas, PortNumber } from './types.js'
+import {
+	LABEL_OPTION,
+	LABEL_MODE_CHOICES,
+	LINE_OPTION,
+	PORT_STATE_CHOICES,
+	panelOption,
+	STATUS_CHOICES,
+} from './options.js'
 
 export function UpdateFeedbacks(self: ModuleInstance): void {
-	const feedbacks: CompanionFeedbackDefinitions = {
+	const PANEL_OPTION = panelOption(self.ports)
+	const labelOf = (options: { panel: PortNumber; label: number }) =>
+		self.panels.get(options.panel)?.labels.get(toLabelId(options.label))
+
+	const feedbacks: CompanionFeedbackDefinitions<FeedbackSchemas> = {
 		label_dynamic_enabled: {
 			name: 'Label - Dynamic Mode Enabled',
 			type: 'boolean',
@@ -10,8 +24,8 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 				bgcolor: combineRgb(0, 0, 200),
 				color: combineRgb(255, 255, 255),
 			},
-			options: [{ type: 'number', id: 'id', label: 'Label ID', default: 0, min: 0, max: 255 }],
-			callback: (feedback) => self.labels.get(Number(feedback.options.id))?.dynamic === true,
+			options: [PANEL_OPTION, LABEL_OPTION],
+			callback: (feedback) => labelOf(feedback.options)?.dynamic === true,
 		},
 		label_mode: {
 			name: 'Label - Mode',
@@ -21,19 +35,17 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 				color: combineRgb(255, 255, 255),
 			},
 			options: [
-				{ type: 'number', id: 'id', label: 'Label ID', default: 0, min: 0, max: 255 },
+				PANEL_OPTION,
+				LABEL_OPTION,
 				{
 					type: 'dropdown',
 					id: 'mode',
 					label: 'Mode',
 					default: 'text',
-					choices: [
-						{ id: 'text', label: 'Text' },
-						{ id: 'image', label: 'Image' },
-					],
+					choices: LABEL_MODE_CHOICES,
 				},
 			],
-			callback: (feedback) => self.labels.get(Number(feedback.options.id))?.mode === feedback.options.mode,
+			callback: (feedback) => labelOf(feedback.options)?.mode === feedback.options.mode,
 		},
 		label_status: {
 			name: 'Label - Status',
@@ -43,11 +55,11 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 				color: combineRgb(255, 255, 255),
 			},
 			options: [
-				{ type: 'number', id: 'id', label: 'Label ID', default: 0, min: 0, max: 255 },
-				{ type: 'textinput', id: 'status', label: 'Status', default: 'error', useVariables: true },
+				PANEL_OPTION,
+				LABEL_OPTION,
+				{ type: 'dropdown', id: 'status', label: 'Status', default: 'error', choices: STATUS_CHOICES },
 			],
-			callback: (feedback) =>
-				(self.labels.get(Number(feedback.options.id))?.status ?? '') === String(feedback.options.status ?? '').trim(),
+			callback: (feedback) => labelOf(feedback.options)?.status === feedback.options.status,
 		},
 		label_line_text: {
 			name: 'Label - Line Text',
@@ -57,20 +69,34 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 				color: combineRgb(255, 255, 255),
 			},
 			options: [
-				{ type: 'number', id: 'id', label: 'Label ID', default: 0, min: 0, max: 255 },
-				{
-					type: 'dropdown',
-					id: 'line',
-					label: 'Line',
-					default: 0,
-					choices: [0, 1, 2, 3].map((i) => ({ id: i, label: `Line ${i + 1}` })),
-				},
+				PANEL_OPTION,
+				LABEL_OPTION,
+				LINE_OPTION,
 				{ type: 'textinput', id: 'text', label: 'Text', default: '', useVariables: true },
 			],
 			callback: (feedback) => {
-				const label = self.labels.get(Number(feedback.options.id))
-				return (label?.lines?.[Number(feedback.options.line)]?.t ?? '') === String(feedback.options.text ?? '').trim()
+				const label = labelOf(feedback.options)
+				return (label?.lines[feedback.options.line]?.t ?? '') === feedback.options.text.trim()
 			},
+		},
+		panel_state: {
+			name: 'Panel - State',
+			type: 'boolean',
+			defaultStyle: {
+				bgcolor: combineRgb(0, 200, 0),
+				color: combineRgb(255, 255, 255),
+			},
+			options: [
+				PANEL_OPTION,
+				{
+					type: 'dropdown',
+					id: 'state',
+					label: 'State',
+					default: 'active',
+					choices: PORT_STATE_CHOICES,
+				},
+			],
+			callback: (feedback) => self.portState(feedback.options.panel) === feedback.options.state,
 		},
 	}
 

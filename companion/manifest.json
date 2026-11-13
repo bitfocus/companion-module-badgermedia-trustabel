@@ -1,9 +1,10 @@
 {
 	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
 	"id": "badgermedia-trustabel",
 	"name": "badgermedia-trustabel",
 	"shortname": "trustabel",
-	"description": "Control trustabel label panels via the Network Adapter REST API",
+	"description": "Control Trustabel label panels via the T-NA4 Network Adapter.",
 	"version": "0.0.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-badgermedia-trustabel.git",
@@ -15,13 +16,13 @@
 		}
 	],
 	"runtime": {
-		"type": "node22",
+		"type": "node26",
 		"api": "nodejs-ipc",
 		"apiVersion": "0.0.0",
 		"entrypoint": "../dist/main.js"
 	},
 	"legacyIds": [],
 	"manufacturer": "Badger Media",
-	"products": ["trustabel"],
-	"keywords": ["label", "panel", "signage", "network adapter"]
+	"products": ["Trustabel T-NA4"],
+	"keywords": ["label", "panel", "patch panel", "network adapter"]
 }

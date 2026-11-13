@@ -1,359 +1,266 @@
-import type { CompanionActionDefinitions } from '@companion-module/base'
-import type { ModuleInstance } from './main.js'
-import type { LabelLine, LabelObject } from './api.js'
+import type {
+	CompanionActionDefinitions,
+	CompanionInputFieldDropdown,
+	CompanionInputFieldTextInput,
+} from '@companion-module/base'
+import type ModuleInstance from './main.js'
+import { toPanelText } from './text.js'
+import {
+	COLOR_CHOICES,
+	DYNAMIC_MODE_CHOICES,
+	LABEL_OPTION,
+	LABELS_OPTION,
+	LINE_OPTION,
+	PERM_OPTION,
+	panelOption,
+	STATUS_CHOICES,
+	durationOption,
+	toggleOption,
+} from './options.js'
+import {
+	toLabelId,
+	type DynamicLabelFields,
+	type LabelColor,
+	type LabelId,
+	type LabelLine,
+	type LabelLines,
+	type LabelPatch,
+} from './api.js'
+import type { ActionSchemas, LineIndex, PortNumber } from './types.js'
 
-const COLOR_CHOICES = [
-	{ id: 'white', label: 'White' },
-	{ id: 'grey', label: 'Grey' },
-	{ id: 'red', label: 'Red' },
-	{ id: 'green', label: 'Green' },
-	{ id: 'blue', label: 'Blue' },
-	{ id: 'yellow', label: 'Yellow' },
-	{ id: 'cyan', label: 'Cyan' },
-	{ id: 'magenta', label: 'Magenta' },
-	{ id: 'orange', label: 'Orange' },
-]
+/** Roughly how long a panel or the adapter takes to come back, so the refresh after it sees the result. */
+const POWER_CYCLE_REFRESH_MS = 10000
+const REBOOT_REFRESH_MS = 30000
 
-const PERM_OPTION = {
-	type: 'checkbox' as const,
-	id: 'perm',
-	label: 'Persist Changes',
-	tooltip: 'Save the panel configuration to internal flash so the change survives a power cycle.',
-	default: false,
-}
-
-const SCREEN_STATE_CHOICES = [
-	{ id: '1', label: 'On' },
-	{ id: '0', label: 'Off' },
-]
-
-function durationOption(defaultValue: number) {
-	return {
-		type: 'number' as const,
-		id: 'duration',
-		label: 'Duration (seconds)',
-		default: defaultValue,
-		min: 1,
-		max: 60,
-	}
-}
-
-function toText(value: unknown): string {
-	if (typeof value === 'string') return value
-	if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-	return value === null || value === undefined ? '' : JSON.stringify(value)
-}
-
-function parse(value: unknown): string {
-	return toText(value).trim()
-}
-
-function parseNumber(value: unknown): number {
-	return Number(parse(value))
-}
+const FIRST_LINE_TOOLTIP = 'If line 1 is left empty the panel displays RECOVERED.'
 
 /**
- * Build `screen_id:state,...` for /screens/display from a shared ID list and On/Off.
- *
- * Unlike the flash and spotlight endpoints, /screens/display only accepts explicit numeric screen
- * ids, so anything else (notably a legacy `ALL`) is dropped with a warning rather than sent on.
+ * Expand `ALL` and comma separated label numbers (1-based, as users see them) into the explicit list
+ * the API requires.
  */
-function screenDisplayPairsFromOptions(self: ModuleInstance, options: Record<string, unknown>): string {
-	const state = options.state === '0' ? '0' : '1'
-	const entries = parse(options.sid)
+export function parseLabelNumbers(raw: string, total: number): { numbers: number[]; rejected: string[] } {
+	const entries = raw
 		.split(',')
-		.map((id) => id.trim())
+		.map((entry) => entry.trim())
 		.filter(Boolean)
 
-	const ids = entries.filter((id) => /^\d+$/.test(id))
-	const rejected = entries.filter((id) => !/^\d+$/.test(id))
-	if (rejected.length > 0) {
-		self.log(
-			'warn',
-			`Screens - Set Display State ignored ${rejected.join(', ')}: this action needs explicit screen IDs, for example 0,1,2`,
-		)
+	const numbers = new Set<number>()
+	const rejected: string[] = []
+	for (const entry of entries) {
+		if (entry.toUpperCase() === 'ALL') {
+			for (let n = 1; n <= total; n++) numbers.add(n)
+		} else if (/^[1-9]\d*$/.test(entry)) {
+			numbers.add(Number(entry))
+		} else {
+			rejected.push(entry)
+		}
 	}
-
-	return ids.map((id) => `${id}:${state}`).join(',')
+	return { numbers: [...numbers].sort((a, b) => a - b), rejected }
 }
 
-/**
- * label_set requires the complete label object, so start from the panel's current state and apply
- * only the fields this action changes.
- */
-async function withCurrentLabel(
-	self: ModuleInstance,
-	id: number,
-	mutate: (label: LabelObject) => void,
-	perm: boolean,
-): Promise<void> {
-	const current = await self.api.labelGet(id)
-	const lines: LabelLine[] = []
-	for (let i = 0; i < 4; i++) {
-		lines.push({ t: current.lines?.[i]?.t ?? '', c: current.lines?.[i]?.c ?? '' })
+function labelIdsFromOptions(self: ModuleInstance, actionName: string, panel: PortNumber, value: string): LabelId[] {
+	const { numbers, rejected } = parseLabelNumbers(value, self.labelCount(panel))
+	if (rejected.length > 0) {
+		self.log('warn', `${actionName} ignored ${rejected.join(', ')}: use label numbers such as 1,2,3 or ALL`)
 	}
+	if (numbers.length === 0) self.log('warn', `${actionName}: no labels to send`)
+	return numbers.map(toLabelId)
+}
 
-	const label: LabelObject = {
-		id: current.id ?? id,
-		mode: current.mode ?? 'text',
-		lines,
-		image: current.image ?? '',
-		scale: current.scale ?? 1,
-		dynamic: current.dynamic ?? false,
+function panelLine(text: string, color: LabelColor): LabelLine {
+	return { t: toPanelText(text), c: color }
+}
+
+function warnIfFirstLineEmpty(self: ModuleInstance, panel: PortNumber, label: number, lines: LabelLines): void {
+	if (lines[0].t === '') {
+		self.log('warn', `Panel ${panel} Label ${label}: line 1 is empty, so the panel will display RECOVERED`)
 	}
+}
 
-	mutate(label)
+async function setLabel(self: ModuleInstance, panel: PortNumber, patch: LabelPatch, perm: boolean): Promise<void> {
+	await self.api.labelSet(self.requirePanel(panel).details.serial, patch, perm)
+	await self.refreshLabel(panel, patch.id)
+}
 
-	await self.api.labelSet(label, perm)
-	await self.refreshLabel(id)
+function lineTextOption<I extends LineIndex>(index: I): CompanionInputFieldTextInput<`text${I}`> {
+	return {
+		type: 'textinput',
+		id: `text${index}`,
+		label: `Line ${index + 1} Text`,
+		tooltip: index === 0 ? FIRST_LINE_TOOLTIP : undefined,
+		default: '',
+		useVariables: true,
+	}
+}
+
+function lineColorOption<I extends LineIndex>(index: I): CompanionInputFieldDropdown<`color${I}`, LabelColor> {
+	return {
+		type: 'dropdown',
+		id: `color${index}`,
+		label: `Line ${index + 1} Color`,
+		default: 'white',
+		choices: COLOR_CHOICES,
+	}
 }
 
 export function UpdateActions(self: ModuleInstance): void {
+	const PANEL_OPTION = panelOption(self.ports)
+
 	const run = async (fn: () => Promise<void>): Promise<void> => {
 		try {
 			await fn()
 		} catch (err) {
-			self.handleApiError(err)
+			self.reportActionError(err)
 		}
 	}
 
-	const actions: CompanionActionDefinitions = {
-		backlight: {
-			name: 'Panel - Wake Backlight',
-			options: [],
-			callback: async () => run(async () => self.api.backlight()),
-		},
-		screens_display: {
-			name: 'Screens - Set Display State',
-			options: [
-				{
-					type: 'textinput',
-					id: 'sid',
-					label: 'Screen IDs (comma separated)',
-					tooltip: 'This endpoint has no ALL target; list each screen ID, for example 0,1,2',
-					default: '0',
-					useVariables: true,
-				},
-				{
-					type: 'dropdown',
-					id: 'state',
-					label: 'State',
-					default: '1',
-					choices: SCREEN_STATE_CHOICES,
-				},
-			],
-			callback: async (event) =>
-				run(async () => {
-					const pairs = screenDisplayPairsFromOptions(self, event.options)
-					if (!pairs) return
-					await self.api.screensDisplay(pairs)
-				}),
-		},
-		flash_screen: {
-			name: 'Screen - Flash',
-			options: [
-				{
-					type: 'textinput',
-					id: 'sid',
-					label: 'Screen IDs (comma separated, or ALL)',
-					default: 'ALL',
-					useVariables: true,
-				},
-				durationOption(10),
-			],
-			callback: async (event) =>
-				run(async () => self.api.flashScreen(parse(event.options.sid), Number(event.options.duration))),
-		},
-		spotlight_screen: {
-			name: 'Screen - Spotlight',
-			options: [
-				{
-					type: 'textinput',
-					id: 'sid',
-					label: 'Screen IDs (comma separated, or ALL)',
-					default: 'ALL',
-					useVariables: true,
-				},
-				durationOption(5),
-			],
-			callback: async (event) =>
-				run(async () => self.api.spotlightScreen(parse(event.options.sid), Number(event.options.duration))),
-		},
+	const actions: CompanionActionDefinitions<ActionSchemas> = {
 		flash_label: {
 			name: 'Label - Flash',
-			options: [
-				{
-					type: 'textinput',
-					id: 'lid',
-					label: 'Label IDs (comma separated, or ALL)',
-					default: 'ALL',
-					useVariables: true,
-				},
-				durationOption(10),
-			],
-			callback: async (event) =>
-				run(async () => self.api.flashLabel(parse(event.options.lid), Number(event.options.duration))),
+			options: [PANEL_OPTION, LABELS_OPTION, durationOption(10)],
+			callback: async ({ options }) =>
+				run(async () => {
+					const serial = self.requirePanel(options.panel).details.serial
+					const ids = labelIdsFromOptions(self, 'Label - Flash', options.panel, options.labels)
+					if (ids.length === 0) return
+					await self.api.flashLabels(serial, ids, options.duration)
+				}),
 		},
 		spotlight_label: {
 			name: 'Label - Spotlight',
-			options: [
-				{
-					type: 'textinput',
-					id: 'lid',
-					label: 'Label IDs (comma separated, or ALL)',
-					default: 'ALL',
-					useVariables: true,
-				},
-				durationOption(15),
-			],
-			callback: async (event) =>
-				run(async () => self.api.spotlightLabel(parse(event.options.lid), Number(event.options.duration))),
+			options: [PANEL_OPTION, LABELS_OPTION, durationOption(15)],
+			callback: async ({ options }) =>
+				run(async () => {
+					const serial = self.requirePanel(options.panel).details.serial
+					const ids = labelIdsFromOptions(self, 'Label - Spotlight', options.panel, options.labels)
+					if (ids.length === 0) return
+					await self.api.spotlightLabels(serial, ids, options.duration)
+				}),
 		},
 		label_set_line: {
 			name: 'Label - Set One Line',
 			options: [
-				{ type: 'textinput', id: 'id', label: 'Label ID', default: '0', useVariables: true },
+				PANEL_OPTION,
+				LABEL_OPTION,
+				LINE_OPTION,
 				{
-					type: 'dropdown',
-					id: 'line',
-					label: 'Line',
-					default: 0,
-					choices: [0, 1, 2, 3].map((i) => ({ id: i, label: `Line ${i + 1}` })),
+					type: 'textinput',
+					id: 'text',
+					label: 'Text',
+					tooltip: FIRST_LINE_TOOLTIP,
+					default: '',
+					useVariables: true,
 				},
-				{ type: 'textinput', id: 'text', label: 'Text', default: '', useVariables: true },
-				{
-					type: 'dropdown',
-					id: 'color',
-					label: 'Color',
-					default: 'white',
-					choices: COLOR_CHOICES,
-					allowCustom: true,
-				},
+				{ type: 'dropdown', id: 'color', label: 'Color', default: 'white', choices: COLOR_CHOICES },
 				PERM_OPTION,
 			],
-			callback: async (event) =>
+			callback: async ({ options }) =>
 				run(async () => {
-					const id = parseNumber(event.options.id)
-					const line = Number(event.options.line)
-					const text = parse(event.options.text)
-					const color = parse(event.options.color)
-					await withCurrentLabel(
-						self,
-						id,
-						(label) => {
-							label.lines[line] = { t: text, c: color }
-						},
-						Boolean(event.options.perm),
-					)
+					const serial = self.requirePanel(options.panel).details.serial
+
+					// `lines` must always carry all four entries, so the other three come from the panel.
+					const id = toLabelId(options.label)
+					const current = await self.api.labelGet(serial, id)
+					const lines: LabelLines = [current.lines[0], current.lines[1], current.lines[2], current.lines[3]]
+					lines[options.line] = panelLine(options.text, options.color)
+
+					warnIfFirstLineEmpty(self, options.panel, options.label, lines)
+					await setLabel(self, options.panel, { id, lines }, options.perm)
 				}),
 		},
 		label_set_text: {
 			name: 'Label - Set All Lines',
 			options: [
-				{ type: 'textinput', id: 'id', label: 'Label ID', default: '0', useVariables: true },
-				...[0, 1, 2, 3].flatMap((i) => [
-					{
-						type: 'textinput' as const,
-						id: `text${i}`,
-						label: `Line ${i + 1} text`,
-						default: '',
-						useVariables: true,
-					},
-					{
-						type: 'dropdown' as const,
-						id: `color${i}`,
-						label: `Line ${i + 1} color`,
-						default: 'white',
-						choices: COLOR_CHOICES,
-						allowCustom: true,
-					},
-				]),
-				{
-					type: 'number',
-					id: 'scale',
-					label: 'Scale',
-					default: 1,
-					min: 1,
-					max: 8,
-				},
+				PANEL_OPTION,
+				LABEL_OPTION,
+				lineTextOption(0),
+				lineColorOption(0),
+				lineTextOption(1),
+				lineColorOption(1),
+				lineTextOption(2),
+				lineColorOption(2),
+				lineTextOption(3),
+				lineColorOption(3),
+				{ type: 'number', id: 'scale', label: 'Scale', default: 1, min: 0, max: 10, asInteger: true },
 				PERM_OPTION,
 			],
-			callback: async (event) =>
+			callback: async ({ options }) =>
 				run(async () => {
-					const id = parseNumber(event.options.id)
-					const lines: LabelLine[] = []
-					for (let i = 0; i < 4; i++) {
-						lines.push({
-							t: parse(event.options[`text${i}`]),
-							c: parse(event.options[`color${i}`]),
-						})
-					}
-					await withCurrentLabel(
+					const lines: LabelLines = [
+						panelLine(options.text0, options.color0),
+						panelLine(options.text1, options.color1),
+						panelLine(options.text2, options.color2),
+						panelLine(options.text3, options.color3),
+					]
+					warnIfFirstLineEmpty(self, options.panel, options.label, lines)
+					await setLabel(
 						self,
-						id,
-						(label) => {
-							label.mode = 'text'
-							label.lines = lines
-							label.scale = Number(event.options.scale)
-						},
-						Boolean(event.options.perm),
+						options.panel,
+						{ id: toLabelId(options.label), mode: 'text', lines, scale: options.scale },
+						options.perm,
 					)
 				}),
 		},
 		label_set_image: {
 			name: 'Label - Set Image Mode',
 			options: [
-				{ type: 'textinput', id: 'id', label: 'Label ID', default: '0', useVariables: true },
+				PANEL_OPTION,
+				LABEL_OPTION,
 				{
 					type: 'textinput',
 					id: 'image',
 					label: 'Image filename',
-					tooltip: 'An RGB565 .bin file already stored on the panel, for example /img.bin',
+					tooltip: 'An RGB565 .bin file already stored on the panel, for example logo.bin',
 					default: '',
 					useVariables: true,
 				},
 				PERM_OPTION,
 			],
-			callback: async (event) =>
-				run(async () => {
-					const id = parseNumber(event.options.id)
-					const image = parse(event.options.image)
-					await withCurrentLabel(
+			callback: async ({ options }) =>
+				run(async () =>
+					setLabel(
 						self,
-						id,
-						(label) => {
-							label.mode = 'image'
-							label.image = image
-						},
-						Boolean(event.options.perm),
-					)
-				}),
+						options.panel,
+						{ id: toLabelId(options.label), mode: 'image', image: options.image.trim() },
+						options.perm,
+					),
+				),
 		},
 		label_set_dynamic_enabled: {
-			name: 'Label- Enable / Disable Dynamic Mode',
+			name: 'Label - Enable / Disable Dynamic Mode',
 			options: [
-				{ type: 'textinput', id: 'id', label: 'Label ID', default: '0', useVariables: true },
-				{ type: 'checkbox', id: 'dynamic', label: 'Dynamic mode enabled', default: true },
+				PANEL_OPTION,
+				LABEL_OPTION,
+				{
+					type: 'dropdown',
+					id: 'dynamic',
+					label: 'Dynamic mode',
+					default: 'toggle',
+					choices: DYNAMIC_MODE_CHOICES,
+				},
 				PERM_OPTION,
 			],
-			callback: async (event) =>
+			callback: async ({ options }) =>
 				run(async () => {
-					const id = parseNumber(event.options.id)
-					await withCurrentLabel(
-						self,
-						id,
-						(label) => {
-							label.dynamic = Boolean(event.options.dynamic)
-						},
-						Boolean(event.options.perm),
-					)
+					const panel = self.requirePanel(options.panel)
+					const id = toLabelId(options.label)
+					let dynamic = options.dynamic === 'enable'
+					if (options.dynamic === 'toggle') {
+						// Labels outside the polled state are read first, so a toggle never guesses.
+						const current = panel.labels.get(id) ?? (await self.api.labelGet(panel.details.serial, id))
+						dynamic = !current.dynamic
+					}
+					await setLabel(self, options.panel, { id, dynamic }, options.perm)
 				}),
 		},
 		label_dynamic: {
-			name: 'Label - Dynamic Update',
+			name: 'Label - Show Dynamic Update',
+			description:
+				'Shows live text, color and/or status on a label, turning on its dynamic mode first if needed. Dynamic updates are not persisted.',
 			options: [
-				{ type: 'textinput', id: 'id', label: 'Label ID', default: '0', useVariables: true },
-				{ type: 'checkbox', id: 'setText', label: 'Set dynamic text', default: true },
+				PANEL_OPTION,
+				LABEL_OPTION,
+				toggleOption('setText', 'Set dynamic text', true),
 				{
 					type: 'textinput',
 					id: 'dyn_text',
@@ -362,75 +269,94 @@ export function UpdateActions(self: ModuleInstance): void {
 					useVariables: true,
 					isVisibleExpression: '$(options:setText)',
 				},
-				{ type: 'checkbox', id: 'setColor', label: 'Set dynamic color', default: false },
+				toggleOption('setColor', 'Set dynamic color', true),
 				{
 					type: 'dropdown',
 					id: 'dyn_c',
-					label: 'Dynamic colour',
+					label: 'Dynamic color',
 					default: 'white',
 					choices: COLOR_CHOICES,
-					allowCustom: true,
 					isVisibleExpression: '$(options:setColor)',
 				},
-				{ type: 'checkbox', id: 'setStatus', label: 'Set status', default: false },
+				toggleOption('setStatus', 'Set status', true),
 				{
-					type: 'textinput',
+					type: 'dropdown',
 					id: 'status',
 					label: 'Status',
-					tooltip: 'For example ok, warn or error.',
-					default: '',
-					useVariables: true,
+					default: 'ok',
+					choices: STATUS_CHOICES,
 					isVisibleExpression: '$(options:setStatus)',
 				},
 			],
-			callback: async (event) =>
+			callback: async ({ options }) =>
 				run(async () => {
-					const id = parseNumber(event.options.id)
-					const fields: { dyn_text?: string; dyn_c?: string; status?: string } = {}
-					if (event.options.setText) fields.dyn_text = parse(event.options.dyn_text)
-					if (event.options.setColor) fields.dyn_c = parse(event.options.dyn_c)
-					if (event.options.setStatus) fields.status = parse(event.options.status)
-					await self.api.labelDynamic(id, fields)
-					await self.refreshLabel(id)
+					const panel = self.requirePanel(options.panel)
+					const serial = panel.details.serial
+					const id = toLabelId(options.label)
+					const fields: DynamicLabelFields = {}
+					if (options.setText) fields.dyn_text = toPanelText(options.dyn_text)
+					if (options.setColor) fields.dyn_c = options.dyn_c
+					if (options.setStatus) fields.status = options.status
+					if (Object.keys(fields).length === 0) {
+						self.log(
+							'warn',
+							`Panel ${options.panel} label ${options.label}: Show Dynamic Update has nothing to set; tick at least one field`,
+						)
+						return
+					}
+					// The panel only accepts dynamic fields once dynamic mode is on (it rejects them with 409
+					// otherwise, and label/set can't carry them), so the mode has to be turned on first.
+					// Labels whose state isn't known yet are always switched on.
+					if (panel.labels.get(id)?.dynamic !== true) {
+						await self.api.labelSet(serial, { id, dynamic: true }, false)
+					}
+					await self.api.labelDynamic(serial, id, fields)
+					await self.refreshLabel(options.panel, id)
 				}),
 		},
-		panel_set: {
-			name: 'Panel - Set Mode & Orientation',
-			description: 'Note: The panel will reboot to apply the new mode and orientation.',
-			options: [
-				{
-					type: 'dropdown',
-					id: 'panel_mode',
-					label: 'Panel mode',
-					default: 'single',
-					choices: [
-						{ id: 'single', label: 'Single' },
-						{ id: 'dual', label: 'Dual' },
-					],
-				},
-				{
-					type: 'dropdown',
-					id: 'orientation',
-					label: 'Orientation',
-					default: 'above',
-					choices: [
-						{ id: 'above', label: 'Above' },
-						{ id: 'below', label: 'Below' },
-					],
-				},
-			],
-			callback: async (event) =>
-				run(async () =>
-					self.api.panelSet(
-						event.options.panel_mode as 'single' | 'dual',
-						event.options.orientation as 'above' | 'below',
-					),
-				),
+		label_dynamic_clear: {
+			name: 'Label - Clear Dynamic Update',
+			description:
+				'Clears the dynamic text, resets the status to ok and turns dynamic mode off, so the label shows its static lines again.',
+			options: [PANEL_OPTION, LABEL_OPTION],
+			callback: async ({ options }) =>
+				run(async () => {
+					const panel = self.requirePanel(options.panel)
+					const serial = panel.details.serial
+					const id = toLabelId(options.label)
+					// The panel rejects dynamic updates while dynamic mode is off, so only clear when it may be on.
+					// Clearing first means the text and status don't reappear the next time dynamic mode is turned on.
+					if (panel.labels.get(id)?.dynamic !== false) {
+						await self.api.labelDynamic(serial, id, { dyn_text: '', status: 'ok' })
+					}
+					await self.api.labelSet(serial, { id, dynamic: false }, false)
+					await self.refreshLabel(options.panel, id)
+				}),
+		},
+		power_cycle: {
+			name: 'Adapter - Power-Cycle Panel',
+			description: 'Cuts and restores power to the panel on the chosen adapter port.',
+			options: [PANEL_OPTION],
+			callback: async ({ options }) =>
+				run(async () => {
+					await self.api.powerCycle(options.panel)
+					self.scheduleRefresh(POWER_CYCLE_REFRESH_MS)
+				}),
+		},
+		reboot: {
+			name: 'Adapter - Reboot',
+			description: 'Reboots the network adapter. The API is unavailable while it restarts.',
+			options: [],
+			callback: async () =>
+				run(async () => {
+					await self.api.reboot()
+					self.expectRestart(REBOOT_REFRESH_MS)
+				}),
 		},
 		refresh: {
 			name: 'Panel - Refresh State',
 			options: [],
-			callback: async () => run(async () => self.poll()),
+			callback: async () => run(async () => self.refresh()),
 		},
 	}
 
