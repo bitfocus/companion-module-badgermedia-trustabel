@@ -1,6 +1,6 @@
 {
 	"name": "badgermedia-trustabel",
-	"version": "1.0.0-beta.1",
+	"version": "1.0.0-beta.2",
 	"main": "dist/main.js",
 	"type": "module",
 	"scripts": {
